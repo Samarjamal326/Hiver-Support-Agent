@@ -1,0 +1,9 @@
+brand: ""
+llm:
+  backend: "ollama"
+  generation_model: ""
+  judge_model: ""
+paths:
+  raw_data: "data/raw/twcs.csv"
+  processed_dir: "data/processed"
+  golden_dir: "data/golden"
