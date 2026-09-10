@@ -29,3 +29,17 @@
     - *False Negatives*: Legitimate English tweets with high densities of emojis, symbols, or numeric IDs can fall below the 0.6 ratio and be dropped.
     - *False Positives*: Short Romance language phrases (e.g. Spanish, French, or Italian phrases lacking diacritics) contain predominantly ASCII letters and will pass the filter.
   - Deemed an acceptable engineering compromise for this stage since English tweets represent the vast majority of SpotifyCares interactions and retention remains above 96%.
+
+## Stage 3: Intent Classification & Smoke-Test Findings
+
+### 1. Poor Calibration of LLM Self-Reported Confidence
+- **Observation**: In the 20-example smoke test with `qwen2.5:3b-instruct`, 19 out of 20 predictions reported a confidence score of exactly `1.00`, exhibiting severe overconfidence regardless of message ambiguity.
+- **Architectural Decision**: The escalation policy must not rely on the LLM's self-reported confidence field as its primary uncertainty signal. Uncertainty and escalation routing will instead be driven by intent risk-tier (e.g. account security vs. casual praise), safety and frustration keywords, and empirical retrieval-match similarity strength.
+
+### 2. Thread-Opener Extraction and Non-Support Content
+- **Observation**: Thread-opener extraction (`inbound == True` and null/empty `in_response_to_tweet_id`) occasionally captures non-support content (such as an official promotional campaign tweet or public announcement swept in as a thread ancestor) rather than genuine customer support requests.
+- **Architectural Decision**: We intentionally avoid introducing brittle algorithmic heuristics to filter these out at the cleaning stage to prevent dropping unconventional support requests. Instead, the golden-set labeling guidelines will provide an explicit `"N/A — not a genuine support request"` option to accurately measure and report this observed rate.
+
+### 3. LLM Reasoning Inaccuracies at High Confidence
+- **Observation**: Self-reported LLM reasoning text can be locally inaccurate even when reported confidence is 1.0 (e.g. misreading verb tense or historical framing).
+- **Architectural Decision**: Confidence scores and generated explanations cannot substitute for objective validation. This underscores the necessity of the human-vs-judge validation protocol planned for the final evaluation harness.
