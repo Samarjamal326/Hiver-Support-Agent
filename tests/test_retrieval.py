@@ -151,3 +151,58 @@ def test_retrieve_top_k_excludes_self_match() -> None:
     assert res_filtered[2]["reply_tweet_id"] == "r3"
     assert pytest.approx(res_filtered[2]["similarity_score"], abs=1e-3) == 0.0
 
+
+def test_retrieve_top_k_excludes_duplicate_customer_tweet_id() -> None:
+    """Verify exclude_tweet_id removes all rows sharing the excluded customer_tweet_id and still returns full k."""
+    # 5 candidate vectors: c0 appears in two rows (branch replies) with identical embeddings
+    embeddings = np.array(
+        [
+            [1.0, 0.0, 0.0],  # c0, branch reply A (similarity 1.0)
+            [1.0, 0.0, 0.0],  # c0, branch reply B (similarity 1.0)
+            [0.8, 0.6, 0.0],  # c1, reply 1 (similarity 0.8)
+            [0.6, 0.8, 0.0],  # c2, reply 2 (similarity 0.6)
+            [0.0, 1.0, 0.0],  # c3, reply 3 (similarity 0.0)
+        ],
+        dtype=np.float32,
+    )
+
+    pairs_df = pd.DataFrame(
+        {
+            "customer_tweet_id": ["c0", "c0", "c1", "c2", "c3"],
+            "customer_text": [
+                "Customer message 0",
+                "Customer message 0",
+                "Customer message 1",
+                "Customer message 2",
+                "Customer message 3",
+            ],
+            "reply_tweet_id": ["r0_a", "r0_b", "r1", "r2", "r3"],
+            "reply_text": [
+                "First branch reply to c0",
+                "Second branch reply to c0",
+                "Reply to c1",
+                "Reply to c2",
+                "Reply to c3",
+            ],
+        }
+    )
+
+    index = build_index(embeddings)
+    query_vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+    # Exclude "c0" and request full k=3
+    results = retrieve_top_k(query_vec, index, pairs_df, k=3, exclude_tweet_id="c0")
+
+    # Verify both rows corresponding to c0 were removed
+    assert len(results) == 3
+    returned_reply_ids = [r["reply_tweet_id"] for r in results]
+    assert "r0_a" not in returned_reply_ids
+    assert "r0_b" not in returned_reply_ids
+
+    # Verify the remaining 3 distinct vectors are returned in descending similarity order
+    assert returned_reply_ids == ["r1", "r2", "r3"]
+    assert pytest.approx(results[0]["similarity_score"], abs=1e-3) == 0.8
+    assert pytest.approx(results[1]["similarity_score"], abs=1e-3) == 0.6
+    assert pytest.approx(results[2]["similarity_score"], abs=1e-3) == 0.0
+
+

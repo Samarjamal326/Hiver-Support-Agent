@@ -60,9 +60,12 @@ def retrieve_top_k(
         query_vec = query_embedding
 
     total_candidates = len(pairs_df)
-    # Query for extra neighbors when exclude_tweet_id is set to return full k after filtering
-    extra = 10 if exclude_tweet_id is not None else 0
-    fetch_k = min(k + extra, total_candidates)
+    # When exclude_tweet_id is provided, query full available pool so correctness never depends on a guessed buffer size
+    available = getattr(index, "_fit_X", None)
+    available_samples = available.shape[0] if available is not None else total_candidates
+    max_pool = min(total_candidates, available_samples)
+
+    fetch_k = max_pool if exclude_tweet_id is not None else min(k, max_pool)
 
     distances, indices = index.kneighbors(query_vec, n_neighbors=fetch_k)
 
@@ -93,31 +96,6 @@ def retrieve_top_k(
         if "customer_tweet_id" in row:
             result_item["customer_tweet_id"] = cust_id
         results.append(result_item)
-
-    # If filtering left fewer than min(k, available_without_exclude) and we haven't queried all, expand
-    target_k = min(k, total_candidates - (1 if norm_exclude_id is not None else 0))
-    if len(results) < target_k and fetch_k < total_candidates:
-        distances, indices = index.kneighbors(query_vec, n_neighbors=total_candidates)
-        results = []
-        for dist, idx in zip(distances[0], indices[0]):
-            row = pairs_df.iloc[idx]
-            cust_id = str(row.get("customer_tweet_id", "")).strip()
-            if cust_id.endswith(".0"):
-                cust_id = cust_id[:-2]
-
-            if norm_exclude_id is not None and cust_id == norm_exclude_id:
-                continue
-
-            similarity = float(1.0 - dist)
-            result_item = {
-                "customer_text": str(row["customer_text"]),
-                "reply_text": str(row["reply_text"]),
-                "reply_tweet_id": str(row["reply_tweet_id"]),
-                "similarity_score": round(similarity, 4),
-            }
-            if "customer_tweet_id" in row:
-                result_item["customer_tweet_id"] = cust_id
-            results.append(result_item)
 
     # Sort descending by similarity score
     results.sort(key=lambda item: item["similarity_score"], reverse=True)
