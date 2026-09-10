@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import time
 from typing import Any, Dict, Optional, Set
 import pandas as pd
 import yaml
@@ -175,6 +176,7 @@ def load_config(config_path: str = "configs/config.yaml") -> dict:
 
 def main(config_path: str = "configs/config.yaml") -> None:
     """Read config, run extraction, and save brand raw slice."""
+    start_time = time.time()
     cfg = load_config(config_path)
     data_cfg = cfg.get("data", {})
 
@@ -215,6 +217,9 @@ def main(config_path: str = "configs/config.yaml") -> None:
     out_path = Path(processed_dir) / f"{brand}_raw_slice.csv"
     slice_df.to_csv(out_path, index=False)
     print(f"Saved raw slice checkpoint to: {out_path}")
+
+    elapsed_time = time.time() - start_time
+    print(f"[sample_brand] Execution completed in: {elapsed_time:.2f}s ({elapsed_time/60:.2f}m)")
 
 
 if __name__ == "__main__":

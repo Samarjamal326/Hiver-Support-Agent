@@ -1,8 +1,9 @@
 """Data cleaning and preprocessing routines for customer support tweets."""
 
 import logging
-import re
 from pathlib import Path
+import re
+import time
 from typing import Any, Dict, Optional
 import pandas as pd
 import yaml
@@ -162,6 +163,7 @@ def load_config(config_path: str = "configs/config.yaml") -> dict:
 
 def main(config_path: str = "configs/config.yaml") -> None:
     """Read raw slice CSV, clean it, write clean CSV, and print report."""
+    start_time = time.time()
     cfg = load_config(config_path)
     data_cfg = cfg.get("data", {})
 
@@ -191,6 +193,9 @@ def main(config_path: str = "configs/config.yaml") -> None:
     print("\n--- Cleaning Report ---")
     for k, v in report.items():
         print(f"  {k}: {v}")
+
+    elapsed_time = time.time() - start_time
+    print(f"\n[clean] Execution completed in: {elapsed_time:.2f}s ({elapsed_time/60:.2f}m)")
 
 
 if __name__ == "__main__":
