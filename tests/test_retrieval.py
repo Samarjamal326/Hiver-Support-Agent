@@ -108,3 +108,46 @@ def test_retrieve_top_k_respects_k_parameter() -> None:
     # Request k larger than dataset size (k=10 on 5 rows) -> should clamp to 5
     res_clamp = retrieve_top_k(query, index, pairs_df, k=10)
     assert len(res_clamp) == 5
+
+
+def test_retrieve_top_k_excludes_self_match() -> None:
+    """Verify retrieve_top_k removes the query's own tweet_id when in index and still returns full k neighbors."""
+    embeddings = np.array(
+        [
+            [1.0, 0.0, 0.0],  # c0: exact match with query (sim = 1.0)
+            [0.8, 0.6, 0.0],  # c1: sim = 0.8
+            [0.6, 0.8, 0.0],  # c2: sim = 0.6
+            [0.0, 1.0, 0.0],  # c3: sim = 0.0
+            [-1.0, 0.0, 0.0],  # c4: sim = -1.0
+        ],
+        dtype=np.float32,
+    )
+
+    pairs_df = pd.DataFrame(
+        {
+            "customer_tweet_id": ["c0", "c1", "c2", "c3", "c4"],
+            "customer_text": ["text 0", "text 1", "text 2", "text 3", "text 4"],
+            "reply_tweet_id": ["r0", "r1", "r2", "r3", "r4"],
+            "reply_text": ["reply 0", "reply 1", "reply 2", "reply 3", "reply 4"],
+        }
+    )
+
+    index = build_index(embeddings)
+    query_vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+    # Without exclusion, c0 is top match at similarity 1.0
+    res_unfiltered = retrieve_top_k(query_vec, index, pairs_df, k=3)
+    assert res_unfiltered[0]["reply_tweet_id"] == "r0"
+    assert pytest.approx(res_unfiltered[0]["similarity_score"], abs=1e-3) == 1.0
+
+    # With exclude_tweet_id="c0", c0 is filtered out, but full k=3 results are returned (c1, c2, c3)
+    res_filtered = retrieve_top_k(query_vec, index, pairs_df, k=3, exclude_tweet_id="c0")
+    assert len(res_filtered) == 3
+    assert all(r["reply_tweet_id"] != "r0" for r in res_filtered)
+    assert res_filtered[0]["reply_tweet_id"] == "r1"
+    assert pytest.approx(res_filtered[0]["similarity_score"], abs=1e-3) == 0.8
+    assert res_filtered[1]["reply_tweet_id"] == "r2"
+    assert pytest.approx(res_filtered[1]["similarity_score"], abs=1e-3) == 0.6
+    assert res_filtered[2]["reply_tweet_id"] == "r3"
+    assert pytest.approx(res_filtered[2]["similarity_score"], abs=1e-3) == 0.0
+

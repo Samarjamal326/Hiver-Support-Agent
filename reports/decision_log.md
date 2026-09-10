@@ -43,3 +43,10 @@
 ### 3. LLM Reasoning Inaccuracies at High Confidence
 - **Observation**: Self-reported LLM reasoning text can be locally inaccurate even when reported confidence is 1.0 (e.g. misreading verb tense or historical framing).
 - **Architectural Decision**: Confidence scores and generated explanations cannot substitute for objective validation. This underscores the necessity of the human-vs-judge validation protocol planned for the final evaluation harness.
+
+## Stage 4: Retrieval Pipeline & Evaluation Leakage Mitigation
+
+### 1. Retrieval Index Self-Match Risk
+- **Observation**: Retrieval index self-match risk — a query already present in the index retrieves itself at similarity 1.0. Harmless for live new customer messages, but a real leakage risk for golden-set evaluation.
+- **Mitigation**: retrieve_top_k supports exclude_tweet_id; the golden set's constituent tweet_ids will be excluded from the retrieval index before final evaluation runs.
+

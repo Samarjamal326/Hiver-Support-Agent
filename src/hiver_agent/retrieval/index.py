@@ -42,8 +42,14 @@ def retrieve_top_k(
     index: Any,
     pairs_df: pd.DataFrame,
     k: int = DEFAULT_K,
+    exclude_tweet_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Retrieve the k nearest customer-reply matches for a query embedding sorted by similarity descending."""
+    """Retrieve the k nearest customer-reply matches for a query embedding sorted by similarity descending.
+
+    When exclude_tweet_id is provided, candidates whose customer_tweet_id matches it
+    are filtered out before returning k results. Extra neighbors are queried internally
+    to guarantee returning the full k results.
+    """
     if pairs_df.empty or len(pairs_df) == 0:
         return []
 
@@ -53,22 +59,65 @@ def retrieve_top_k(
     else:
         query_vec = query_embedding
 
-    effective_k = min(k, len(pairs_df))
-    distances, indices = index.kneighbors(query_vec, n_neighbors=effective_k)
+    total_candidates = len(pairs_df)
+    # Query for extra neighbors when exclude_tweet_id is set to return full k after filtering
+    extra = 10 if exclude_tweet_id is not None else 0
+    fetch_k = min(k + extra, total_candidates)
+
+    distances, indices = index.kneighbors(query_vec, n_neighbors=fetch_k)
+
+    norm_exclude_id: Optional[str] = None
+    if exclude_tweet_id is not None:
+        norm_exclude_id = str(exclude_tweet_id).strip()
+        if norm_exclude_id.endswith(".0"):
+            norm_exclude_id = norm_exclude_id[:-2]
 
     results: List[Dict[str, Any]] = []
     for dist, idx in zip(distances[0], indices[0]):
+        row = pairs_df.iloc[idx]
+        cust_id = str(row.get("customer_tweet_id", "")).strip()
+        if cust_id.endswith(".0"):
+            cust_id = cust_id[:-2]
+
+        if norm_exclude_id is not None and cust_id == norm_exclude_id:
+            continue
+
         # Cosine distance d = 1 - cos(theta) => Cosine similarity = 1.0 - d
         similarity = float(1.0 - dist)
-        row = pairs_df.iloc[idx]
-        results.append(
-            {
+        result_item = {
+            "customer_text": str(row["customer_text"]),
+            "reply_text": str(row["reply_text"]),
+            "reply_tweet_id": str(row["reply_tweet_id"]),
+            "similarity_score": round(similarity, 4),
+        }
+        if "customer_tweet_id" in row:
+            result_item["customer_tweet_id"] = cust_id
+        results.append(result_item)
+
+    # If filtering left fewer than min(k, available_without_exclude) and we haven't queried all, expand
+    target_k = min(k, total_candidates - (1 if norm_exclude_id is not None else 0))
+    if len(results) < target_k and fetch_k < total_candidates:
+        distances, indices = index.kneighbors(query_vec, n_neighbors=total_candidates)
+        results = []
+        for dist, idx in zip(distances[0], indices[0]):
+            row = pairs_df.iloc[idx]
+            cust_id = str(row.get("customer_tweet_id", "")).strip()
+            if cust_id.endswith(".0"):
+                cust_id = cust_id[:-2]
+
+            if norm_exclude_id is not None and cust_id == norm_exclude_id:
+                continue
+
+            similarity = float(1.0 - dist)
+            result_item = {
                 "customer_text": str(row["customer_text"]),
                 "reply_text": str(row["reply_text"]),
                 "reply_tweet_id": str(row["reply_tweet_id"]),
                 "similarity_score": round(similarity, 4),
             }
-        )
+            if "customer_tweet_id" in row:
+                result_item["customer_tweet_id"] = cust_id
+            results.append(result_item)
 
     # Sort descending by similarity score
     results.sort(key=lambda item: item["similarity_score"], reverse=True)
@@ -124,7 +173,7 @@ def main(
 
     # Sample 3 test queries from reports/classifier_smoke_sample.csv (rows 7, 9, 20)
     smoke_sample_path = root_dir / "reports" / "classifier_smoke_sample.csv"
-    sample_queries: List[str] = []
+    sample_queries: List[Dict[str, str]] = []
 
     if smoke_sample_path.exists():
         smoke_df = pd.read_csv(smoke_sample_path, dtype=str)
@@ -132,34 +181,54 @@ def main(
         target_indices = [6, 8, 19]  # 0-indexed rows 7, 9, 20
         for idx in target_indices:
             if idx < len(smoke_df):
-                sample_queries.append(str(smoke_df.iloc[idx][text_col]))
+                row = smoke_df.iloc[idx]
+                sample_queries.append(
+                    {
+                        "tweet_id": str(row["tweet_id"]).strip(),
+                        "text": str(row[text_col]),
+                    }
+                )
 
     if not sample_queries:
         sample_queries = [
-            "What's going on with the #WindowsPhone app? It's been like a week since it stopped working.",
-            "why can’t we pay the premium student discount with paypal???",
-            "ummm why is Take Care suddenly non existent...",
+            {
+                "tweet_id": "1915256",
+                "text": "What's going on with the #WindowsPhone app? It's been like a week since it stopped working.",
+            },
+            {
+                "tweet_id": "708095",
+                "text": "why can’t we pay the premium student discount with paypal???",
+            },
+            {
+                "tweet_id": "2555541",
+                "text": "ummm why is Take Care suddenly non existent...",
+            },
         ]
 
     print("\n" + "=" * 80)
-    print("                    Retrieval Top-K Quality Review")
+    print("                    Retrieval Top-K Quality Review (Self-Match Excluded)")
     print("=" * 80)
 
-    for q_idx, query_text in enumerate(sample_queries, 1):
+    for q_idx, query_info in enumerate(sample_queries, 1):
+        query_text = query_info["text"]
+        query_tid = query_info["tweet_id"]
         safe_query = query_text.encode("ascii", errors="replace").decode("ascii")
-        print(f"\n[Query {q_idx}]: \"{safe_query}\"")
+        print(f"\n[Query {q_idx} (Tweet ID: {query_tid})]: \"{safe_query}\"")
         print("-" * 80)
 
         query_emb = embed_texts([query_text], model)
-        matches = retrieve_top_k(query_emb, index, pairs_df, k=k)
+        matches = retrieve_top_k(
+            query_emb, index, pairs_df, k=k, exclude_tweet_id=query_tid
+        )
 
         for m_idx, match in enumerate(matches, 1):
             cust_preview = match["customer_text"].encode("ascii", errors="replace").decode("ascii")
             reply_preview = match["reply_text"].encode("ascii", errors="replace").decode("ascii")
             score = match["similarity_score"]
             tid = match["reply_tweet_id"]
+            cust_tid = match.get("customer_tweet_id", "N/A")
 
-            print(f"  Match {m_idx} (Score: {score:.4f} | Reply ID: {tid}):")
+            print(f"  Match {m_idx} (Score: {score:.4f} | Cust ID: {cust_tid} | Reply ID: {tid}):")
             print(f"    Similar Past Customer: \"{cust_preview}\"")
             print(f"    Brand Historical Reply: \"{reply_preview}\"")
 
