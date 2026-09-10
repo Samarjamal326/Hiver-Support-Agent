@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(r"https?://\S+|www\.\S+")
 LEADING_MENTION_PATTERN = re.compile(r"^(?:@\w+\s*)+")
+ALL_MENTION_PATTERN = re.compile(r"@\w+")
 WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
@@ -27,6 +28,19 @@ def strip_leading_mentions(text: str) -> str:
     if not isinstance(text, str):
         return ""
     return LEADING_MENTION_PATTERN.sub("", text)
+
+
+def strip_all_mentions(text: str) -> str:
+    """Remove every @mention from text — used ONLY for language ratio calculation.
+
+    This function must NOT be applied to text_clean itself; it exists solely so that
+    numeric @handles (e.g. @115888, @3243) do not dilute the ASCII letter ratio and
+    cause short but valid English tweets to be misclassified as non-English.
+    text_clean preserves mid-sentence @mentions as per the original pipeline spec.
+    """
+    if not isinstance(text, str):
+        return ""
+    return WHITESPACE_PATTERN.sub(" ", ALL_MENTION_PATTERN.sub("", text)).strip()
 
 
 def normalize_whitespace(text: str) -> str:
@@ -50,14 +64,23 @@ def clean_text(text: str) -> str:
 def is_english_heuristic(text: str, threshold: float = 0.6) -> bool:
     """Heuristic to detect English text based on ASCII alphabetic character ratio.
 
-    Calculates the ratio of ASCII alphabetic characters (a-z, A-Z) to total characters.
+    Strips all @mentions before computing the ratio so numeric handles (e.g. @115888)
+    do not dilute the letter count and produce false non-English classifications.
+    The ratio is: ASCII alphabetic chars / total chars in the mention-free string.
     """
     if not isinstance(text, str) or not text:
         return False
-    total_chars = len(text)
-    if total_chars == 0:
-        return False
-    ascii_letters = sum(1 for c in text if ("a" <= c <= "z" or "A" <= c <= "Z"))
+    # Strip mentions for ratio computation only — does NOT affect text_clean
+    normalised = strip_all_mentions(text)
+    if not normalised:
+        # If nothing remains after stripping mentions, treat as English
+        # (the original tweet was mentions-only threading noise; min-length filter
+        # should have already dropped truly empty rows before we reach here)
+        return True
+    total_chars = len(normalised)
+    ascii_letters = sum(
+        1 for c in normalised if ("a" <= c <= "z" or "A" <= c <= "Z")
+    )
     return (ascii_letters / total_chars) >= threshold
 
 
@@ -74,7 +97,11 @@ def mask_min_length(df: pd.DataFrame, min_len: int = 3) -> pd.Series:
 
 
 def mask_english(df: pd.DataFrame, threshold: float = 0.6) -> pd.Series:
-    """Boolean mask returning True for rows passing the ASCII English heuristic."""
+    """Boolean mask returning True for rows passing the ASCII English heuristic.
+
+    The heuristic runs against strip_all_mentions(text_clean) to avoid numeric
+    @handles diluting the ASCII letter ratio. text_clean itself is not modified.
+    """
     col = "text_clean" if "text_clean" in df.columns else "text"
     return df[col].apply(lambda t: is_english_heuristic(t, threshold=threshold))
 
