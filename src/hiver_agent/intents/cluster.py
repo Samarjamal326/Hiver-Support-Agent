@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 # Ensure PyTorch OpenMP runtime initializes before scikit-learn on Windows
@@ -10,17 +11,26 @@ try:
 except ImportError:
     pass
 
+# Ensure src root is in sys.path when executed directly as a script
+_src_root = Path(__file__).resolve().parent.parent.parent
+if str(_src_root) not in sys.path:
+    sys.path.insert(0, str(_src_root))
+
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score
 import yaml
 
+from hiver_agent.embeddings import (
+    DEFAULT_MODEL_NAME,
+    embed_texts,
+    load_embedding_model,
+)
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_NAME = "all-MiniLM-L6-v2"
 K_RANGE = range(8, 15)
 RANDOM_STATE = 42
 MAX_SAMPLE_SIZE = 1000
@@ -54,12 +64,8 @@ def embed_messages(
     texts: List[str], model_name: str = DEFAULT_MODEL_NAME
 ) -> np.ndarray:
     """Encode a list of text messages into dense sentence embeddings using SentenceTransformer."""
-    if not texts:
-        return np.empty((0, 384), dtype=np.float32)
-
-    model = SentenceTransformer(model_name)
-    embeddings = model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
-    return np.asarray(embeddings, dtype=np.float32)
+    model = load_embedding_model(model_name)
+    return embed_texts(texts, model)
 
 
 def sweep_k(
