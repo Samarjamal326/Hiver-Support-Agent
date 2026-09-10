@@ -1,4 +1,4 @@
-brand: ""
+brand: "SpotifyCares"
 llm:
   backend: "ollama"
   generation_model: ""
@@ -7,3 +7,8 @@ paths:
   raw_data: "data/raw/twcs.csv"
   processed_dir: "data/processed"
   golden_dir: "data/golden"
+data:
+  raw_path: "data/raw/twcs.csv"
+  processed_dir: "data/processed"
+  brand: "SpotifyCares"
+  max_thread_traverse_depth: 20   # safety cap when walking reply chains
