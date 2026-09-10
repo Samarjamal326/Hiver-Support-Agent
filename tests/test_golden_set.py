@@ -6,6 +6,7 @@ import pytest
 from hiver_agent.eval.golden_set import (
     build_thread_context,
     filter_candidate_pool,
+    generate_golden_set_candidates,
     rough_intent_bucket,
     split_openers_and_followups,
     stratified_sample_openers,
@@ -148,3 +149,62 @@ def test_rough_intent_bucket_mappings() -> None:
     assert rough_intent_bucket("worst customer service ever, absolutely terrible") == "General Complaint/Frustration"
     assert rough_intent_bucket("thanks so much for the quick help, love you guys") == "Praise/Off-topic"
     assert rough_intent_bucket("random unclassifiable text without keywords") == "Unclear"
+
+
+def test_generate_golden_set_candidates_pool_counts_and_historical_replies(tmp_path) -> None:
+    """Verify generate_golden_set_candidates writes raw pool counts and attaches historical_reply_text to debug CSV."""
+    clean_csv = tmp_path / "clean.csv"
+    smoke_csv = tmp_path / "smoke.csv"
+    out_candidates = tmp_path / "candidates.csv"
+    out_debug = tmp_path / "debug.csv"
+    out_pool_counts = tmp_path / "pool_counts.csv"
+
+    # Synthetic interaction data:
+    # 2 customer openers (101, 102), 1 brand reply (103 replying to 101), 1 customer follow-up (104)
+    data = {
+        "tweet_id": ["101", "102", "103", "104"],
+        "author_id": ["user_1", "user_2", "SpotifyCares", "user_1"],
+        "inbound": ["True", "True", "False", "True"],
+        "created_at": ["2023-01-01 10:00:00", "2023-01-01 10:01:00", "2023-01-01 10:05:00", "2023-01-01 10:10:00"],
+        "in_response_to_tweet_id": [None, None, "101", "103"],
+        "text_clean": [
+            "Need help logging in to my account",
+            "Why is my playlist buffering constantly",
+            "Hey! Send us a DM with your account email.",
+            "Thanks, DM sent",
+        ],
+        "thread_id": ["101", "102", "101", "101"],
+    }
+    pd.DataFrame(data).to_csv(clean_csv, index=False)
+    pd.DataFrame({"tweet_id": []}).to_csv(smoke_csv, index=False)
+
+    stats = generate_golden_set_candidates(
+        clean_csv_path=clean_csv,
+        smoke_sample_path=smoke_csv,
+        output_candidates_path=out_candidates,
+        output_debug_path=out_debug,
+        output_pool_counts_path=out_pool_counts,
+        openers_target=2,
+        followups_target=1,
+        min_per_bucket=1,
+    )
+
+    # 1. Verify pool counts CSV exists and contains expected counts
+    assert out_pool_counts.exists()
+    pool_counts_df = pd.read_csv(out_pool_counts)
+    assert set(pool_counts_df.columns) == {"rough_intent_bucket", "count"}
+    assert pool_counts_df["count"].sum() == 2
+
+    # 2. Verify debug CSV contains historical_reply_text
+    assert out_debug.exists()
+    debug_df = pd.read_csv(out_debug, dtype=str)
+    assert "historical_reply_text" in debug_df.columns
+    row_101 = debug_df[debug_df["tweet_id"] == "101"]
+    assert len(row_101) == 1
+    assert row_101.iloc[0]["historical_reply_text"] == "Hey! Send us a DM with your account email."
+
+    # 3. Verify candidates CSV retains blinded 9-column schema without historical_reply_text
+    cand_df = pd.read_csv(out_candidates, dtype=str)
+    assert "historical_reply_text" not in cand_df.columns
+    assert len(cand_df.columns) == 9
+
