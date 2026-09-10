@@ -50,3 +50,17 @@
 - **Observation**: Retrieval index self-match risk — a query already present in the index retrieves itself at similarity 1.0. Harmless for live new customer messages, but a real leakage risk for golden-set evaluation.
 - **Mitigation**: retrieve_top_k supports exclude_tweet_id; the golden set's constituent tweet_ids will be excluded from the retrieval index before final evaluation runs.
 
+## Stage 5: Grounded Reply Generation & Guardrails
+
+### 1. Mandatory Grounding-ID Citation for Auditability
+- **Decision**: The reply generation prompt requires the LLM to output a structured JSON schema including a `grounding_tweet_ids` field naming the specific exemplar `reply_tweet_id`(s) drawn from.
+- **Rationale & Auditability**: Free-form generation carries the risk of the model hallucinating advice or claiming to follow retrieved support policy while completely ignoring the exemplars. Requiring explicit citation allows automated or manual verification to catch:
+  - Replies that cite zero exemplars while answering non-trivial domain questions (unsupported free generation).
+  - Replies that fabricate or hallucinate citations not present in the retrieved exemplar set.
+  - Semantic divergence between the drafted reply and the actual resolution steps present in the cited historical reply.
+
+### 2. Anti-Fabrication Guardrail
+- **Decision**: The drafting prompt strictly forbids inventing refund amounts, resolution dates, account details, or specific company policy terms not present in the retrieved exemplars.
+- **Rationale**: In support automation, hallucinated monetary promises or non-existent policy timelines represent severe business and customer trust liabilities. When exemplars do not provide a definitive resolution path, the model is instructed to fall back to safe conversational deflection (e.g. asking the customer to DM account details for manual human investigation) rather than fabricating specific policy commitments.
+
+
