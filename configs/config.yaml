@@ -3,6 +3,9 @@ llm:
   backend: "ollama"
   generation_model: ""
   judge_model: ""
+  ollama_base_url: "http://localhost:11434"
+  classification_model: "qwen2.5:3b-instruct"
+  cache_dir: "cache/llm_responses"
 paths:
   raw_data: "data/raw/twcs.csv"
   processed_dir: "data/processed"
