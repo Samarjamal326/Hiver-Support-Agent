@@ -324,6 +324,8 @@ def generate_golden_set_candidates(
     smoke_sample_path: Path,
     output_candidates_path: Path,
     output_debug_path: Optional[Path] = None,
+    output_pool_counts_path: Optional[Path] = None,
+    brand: str = DEFAULT_BRAND,
     openers_target: int = DEFAULT_OPENERS_TARGET,
     followups_target: int = DEFAULT_FOLLOWUPS_TARGET,
     min_per_bucket: int = DEFAULT_MIN_PER_BUCKET,
@@ -354,84 +356,144 @@ def generate_golden_set_candidates(
         len(followups_pool),
     )
 
-    # Sample openers with minimum floor stratification
-    sampled_openers, bucket_counts = stratified_sample_openers(
-        openers_pool,
-        target_total=openers_target,
-        min_per_bucket=min_per_bucket,
-        random_state=random_state,
+    # Compute raw eligible opener pool counts across all rough intent buckets BEFORE sampling
+    text_col = "text_clean" if "text_clean" in openers_pool.columns else "text"
+    openers_pool_copy = openers_pool.copy()
+    openers_pool_copy["rough_intent_bucket"] = (
+        openers_pool_copy[text_col].astype(str).apply(rough_intent_bucket)
     )
-    sampled_openers["position"] = "opener"
-    sampled_openers["thread_context"] = ""
-
-    # Sample follow-ups
-    sampled_followups = sample_follow_ups(
-        followups_pool,
-        target_total=followups_target,
-        random_state=random_state,
+    raw_bucket_counts: Dict[str, int] = (
+        openers_pool_copy["rough_intent_bucket"].value_counts().to_dict()
     )
-    sampled_followups["position"] = "follow_up"
-    sampled_followups["rough_intent_bucket"] = sampled_followups["text_clean"].apply(rough_intent_bucket)
 
-    logger.info("Building conversational thread contexts for %d follow-ups...", len(sampled_followups))
-    contexts: List[str] = []
-    for _, row in sampled_followups.iterrows():
-        ctx = build_thread_context(row, full_df)
-        contexts.append(ctx)
-    sampled_followups["thread_context"] = contexts
+    if output_pool_counts_path:
+        output_pool_counts_path.parent.mkdir(parents=True, exist_ok=True)
+        pool_counts_rows = [
+            {"rough_intent_bucket": bucket, "count": count}
+            for bucket, count in sorted(raw_bucket_counts.items(), key=lambda x: x[1], reverse=True)
+        ]
+        pool_counts_df = pd.DataFrame(pool_counts_rows)
+        pool_counts_df.to_csv(output_pool_counts_path, index=False, encoding="utf-8")
+        logger.info("Saved raw opener candidate bucket pool counts to %s", output_pool_counts_path)
 
-    # Combine sampled sets
-    combined = pd.concat([sampled_openers, sampled_followups], ignore_index=True)
+    # If candidates file already exists, load existing sampled candidates to guarantee byte-for-byte schema invariance
+    if output_candidates_path.exists():
+        logger.info("Existing candidates file found at %s; preserving existing sample", output_candidates_path)
+        candidates_df = pd.read_csv(output_candidates_path, dtype=str)
+        combined = candidates_df.copy()
+        text_src = "message_text" if "message_text" in combined.columns else text_col
+        combined["rough_intent_bucket"] = combined[text_src].astype(str).apply(rough_intent_bucket)
+        openers_in_sample = combined[combined["position"] == "opener"]
+        bucket_counts = openers_in_sample["rough_intent_bucket"].value_counts().to_dict()
+        sampled_openers_count = len(openers_in_sample)
+        sampled_followups_count = len(combined[combined["position"] == "follow_up"])
+    else:
+        # Sample openers with minimum floor stratification
+        sampled_openers, bucket_counts = stratified_sample_openers(
+            openers_pool,
+            target_total=openers_target,
+            min_per_bucket=min_per_bucket,
+            random_state=random_state,
+        )
+        sampled_openers["position"] = "opener"
+        sampled_openers["thread_context"] = ""
 
-    text_col = "text_clean" if "text_clean" in combined.columns else "text"
-    combined["message_text"] = combined[text_col]
+        # Sample follow-ups
+        sampled_followups = sample_follow_ups(
+            followups_pool,
+            target_total=followups_target,
+            random_state=random_state,
+        )
+        sampled_followups["position"] = "follow_up"
+        sampled_followups["rough_intent_bucket"] = sampled_followups[text_col].apply(rough_intent_bucket)
 
-    # Initialize human annotation columns (strictly blank)
-    combined["human_intent"] = ""
-    combined["human_difficulty"] = ""
-    combined["human_escalate"] = ""
-    combined["notes"] = ""
+        logger.info("Building conversational thread contexts for %d follow-ups...", len(sampled_followups))
+        contexts: List[str] = []
+        for _, row in sampled_followups.iterrows():
+            ctx = build_thread_context(row, full_df)
+            contexts.append(ctx)
+        sampled_followups["thread_context"] = contexts
 
-    # Define strict output schema without rough_intent_bucket (blinded labeling)
-    output_columns = [
-        "tweet_id",
-        "thread_id",
-        "position",
-        "thread_context",
-        "message_text",
-        "human_intent",
-        "human_difficulty",
-        "human_escalate",
-        "notes",
-    ]
-    candidates_df = combined[output_columns].copy()
+        # Combine sampled sets
+        combined = pd.concat([sampled_openers, sampled_followups], ignore_index=True)
+        combined["message_text"] = combined[text_col]
 
-    output_candidates_path.parent.mkdir(parents=True, exist_ok=True)
-    candidates_df.to_csv(output_candidates_path, index=False, encoding="utf-8")
-    logger.info("Wrote %d golden set candidates to %s", len(candidates_df), output_candidates_path)
+        # Initialize human annotation columns (strictly blank)
+        combined["human_intent"] = ""
+        combined["human_difficulty"] = ""
+        combined["human_escalate"] = ""
+        combined["notes"] = ""
 
-    # Optional debug sheet for auditing bucket allocations
+        # Define strict output schema without rough_intent_bucket (blinded labeling)
+        output_columns = [
+            "tweet_id",
+            "thread_id",
+            "position",
+            "thread_context",
+            "message_text",
+            "human_intent",
+            "human_difficulty",
+            "human_escalate",
+            "notes",
+        ]
+        candidates_df = combined[output_columns].copy()
+
+        output_candidates_path.parent.mkdir(parents=True, exist_ok=True)
+        candidates_df.to_csv(output_candidates_path, index=False, encoding="utf-8")
+        logger.info("Wrote %d golden set candidates to %s", len(candidates_df), output_candidates_path)
+        sampled_openers_count = len(sampled_openers)
+        sampled_followups_count = len(sampled_followups)
+
+    # Optional debug sheet with historical brand replies for automated metrics auditing
     if output_debug_path:
+        # Build lookup for historical brand replies matching customer tweet_ids
+        brand_mask = full_df["author_id"].astype(str).str.strip().str.lower() == str(brand).strip().lower()
+        brand_df = full_df[brand_mask]
+
+        brand_reply_lookup: Dict[str, str] = {}
+        full_text_col = "text_clean" if "text_clean" in full_df.columns else "text"
+        for _, b_row in brand_df.iterrows():
+            parent_raw = b_row.get("in_response_to_tweet_id")
+            if parent_raw is None or pd.isna(parent_raw):
+                continue
+            parent_id = str(parent_raw).strip()
+            if parent_id.endswith(".0"):
+                parent_id = parent_id[:-2]
+            if not parent_id or parent_id.lower() in ("nan", "none", "<na>"):
+                continue
+            if parent_id not in brand_reply_lookup:
+                brand_reply_lookup[parent_id] = str(b_row.get(full_text_col, b_row.get("text", "")))
+
+        def _lookup_historical_reply(tid: Any) -> str:
+            s_tid = str(tid).strip()
+            if s_tid.endswith(".0"):
+                s_tid = s_tid[:-2]
+            return brand_reply_lookup.get(s_tid, "")
+
+        combined["historical_reply_text"] = combined["tweet_id"].apply(_lookup_historical_reply)
+
         debug_columns = [
             "tweet_id",
             "thread_id",
             "position",
             "rough_intent_bucket",
             "message_text",
+            "historical_reply_text",
         ]
         debug_df = combined[debug_columns].copy()
         output_debug_path.parent.mkdir(parents=True, exist_ok=True)
         debug_df.to_csv(output_debug_path, index=False, encoding="utf-8")
-        logger.info("Wrote debug bucket allocations to %s", output_debug_path)
+        logger.info("Wrote debug bucket allocations with historical replies to %s", output_debug_path)
 
     return {
         "total_raw_rows": total_raw_rows,
         "candidate_pool_size": candidate_pool_size,
         "openers_pool_size": len(openers_pool),
         "followups_pool_size": len(followups_pool),
-        "sampled_openers_count": len(sampled_openers),
-        "sampled_followups_count": len(sampled_followups),
+        "sampled_openers_count": sampled_openers_count,
+        "sampled_followups_count": sampled_followups_count,
         "total_sampled": len(candidates_df),
+        "raw_opener_bucket_counts": raw_bucket_counts,
         "opener_bucket_counts": bucket_counts,
     }
 
@@ -456,12 +518,15 @@ def main(config_path: Optional[str] = None) -> None:
     smoke_sample_path = root_dir / "reports" / "classifier_smoke_sample.csv"
     output_candidates_path = root_dir / "reports" / "golden_set_candidates.csv"
     output_debug_path = root_dir / "reports" / "golden_set_bucket_debug.csv"
+    output_pool_counts_path = root_dir / "reports" / "golden_set_bucket_pool_counts.csv"
 
     stats = generate_golden_set_candidates(
         clean_csv_path=clean_csv_path,
         smoke_sample_path=smoke_sample_path,
         output_candidates_path=output_candidates_path,
         output_debug_path=output_debug_path,
+        output_pool_counts_path=output_pool_counts_path,
+        brand=brand,
     )
 
     print("\n" + "=" * 80)
@@ -474,6 +539,10 @@ def main(config_path: Optional[str] = None) -> None:
     print(f"Sampled Openers: {stats['sampled_openers_count']}")
     print(f"Sampled Follow-ups: {stats['sampled_followups_count']}")
     print(f"Total Golden Set Candidates: {stats['total_sampled']}")
+    print("-" * 80)
+    print("Raw Opener Candidate Pool by rough_intent_bucket (Pre-Stratification Pool):")
+    for bucket, cnt in sorted(stats["raw_opener_bucket_counts"].items(), key=lambda x: x[1], reverse=True):
+        print(f"  {bucket:<32}: {cnt:,} items")
     print("-" * 80)
     print("Opener Stratification Distribution (by rough_intent_bucket):")
     for bucket, cnt in sorted(stats["opener_bucket_counts"].items(), key=lambda x: x[1], reverse=True):

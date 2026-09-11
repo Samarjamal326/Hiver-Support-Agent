@@ -50,3 +50,15 @@
 - **Observation**: Retrieval index self-match risk — a query already present in the index retrieves itself at similarity 1.0. Harmless for live new customer messages, but a real leakage risk for golden-set evaluation.
 - **Mitigation**: retrieve_top_k supports exclude_tweet_id; the golden set's constituent tweet_ids will be excluded from the retrieval index before final evaluation runs.
 
+### 2. Retrieval Buffer Elimination
+- **Observation & Rationale**: Querying with an arbitrary buffer like `k + 10` can fail if multiple branch replies share the same excluded customer_tweet_id or if high-similarity duplicates crowd the window. We replaced this with querying the full candidate pool (`n_neighbors = min(len(pairs_df), available)`) whenever `exclude_tweet_id` is supplied, prioritizing algorithmic correctness over a guessed constant buffer.
+
+## Stage 5: Evaluation & Golden-Set Refinements
+
+### 1. Raw Per-Bucket Candidate Pool Counts
+- **Reporting Honesty**: Raw per-bucket candidate pool counts across all 27,790 eligible thread openers are now explicitly saved to `reports/golden_set_bucket_pool_counts.csv` for reporting honesty, preventing misleading headline numbers by exposing the severe underlying category imbalance before the 10-per-bucket floor and 140-total sampling were applied.
+
+### 2. Hidden Historical-Reply Reference Field
+- **Ground-Truth Reply Reference**: Historical brand replies were looked up and added as `historical_reply_text` in `reports/golden_set_bucket_debug.csv` ONLY (preserving `reports/golden_set_candidates.csv` as strictly blinded, 9-column, and schema-invariant) to support a future automated similarity-to-real-reply evaluation metric.
+
+
